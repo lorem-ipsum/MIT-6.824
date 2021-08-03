@@ -8,7 +8,7 @@
 
 ### [Videos](https://www.youtube.com/watch?list=PLrw6a1wE39_tb2fErI4-WkMbsvGQk9_UB)
 
-- [ ] Lecture 1: Introduction
+- [x] Lecture 1: Introduction
 - [ ] Lecture 2: RPC and Threads
 - [ ] Lecture 3: GFS
 - [ ] Lecture 4: Primary-Backup Replication
