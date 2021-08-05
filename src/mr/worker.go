@@ -1,10 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"time"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,6 +29,11 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+type W struct {
+	Id      int
+	Mapf    func(string, string) []KeyValue
+	Reducef func(string, []string) string
+}
 
 //
 // main/mrworker.go calls this function.
@@ -33,32 +43,112 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 
+	w := W{
+		Id:      os.Getpid(),
+		Mapf:    mapf,
+		Reducef: reducef,
+	}
+
+	log.Printf("new Worker generated, Id = %v", w.Id)
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	for {
+		reply := w.CallRequestForMapTask()
+		switch reply.Type {
+		case 1:
+			{
+				filename := reply.Info.TaskFile
+				nReduce := reply.Info.NReduce
+				taskId := reply.Info.TaskId
+
+				log.Printf("Worker %v: get new MapTask(%v)", w.Id, filename)
+
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", file)
+				}
+				content, err := ioutil.ReadAll(file)
+				if err != nil {
+					log.Fatalf("cannot read %v", file)
+				}
+				file.Close()
+				kva := w.Mapf(filename, string(content))
+
+				intermediate := make([][]KeyValue, len(kva))
+
+				for _, kv := range kva {
+					intermediate[ihash(kv.Key)%nReduce] = append(intermediate[ihash(kv.Key)%nReduce], kv)
+				}
+
+				for i := 0; i < nReduce; i++ {
+					file, err := os.Create(fmt.Sprintf("./mr-tmp/mr-%v-%v", taskId, i))
+					if err != nil {
+						log.Fatalf("Failed to create file ./mr-tmp/mr-%v-%v", taskId, i)
+					}
+
+					enc := json.NewEncoder(file)
+					for _, kv := range intermediate[i] {
+						err := enc.Encode(&kv)
+						if err != nil {
+							log.Fatalf("Failed encoding")
+						}
+					}
+
+				}
+
+				w.CallDoneMapTask(filename)
+
+				log.Printf("Worker %v: MapTask(%v) done", w.Id, filename)
+			}
+		case 2:
+			{
+				log.Printf("Worker %v: get new ReduceTask", w.Id)
+
+			}
+		default:
+			{
+				log.Fatalf("Invalid reply.Type %v!", reply.Type)
+			}
+		}
+		time.Sleep(time.Second)
+	}
+
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func (w *W) CallRequestForMapTask() Reply {
+	args := Args{
+		WorkerId: w.Id,
+		Operand:  "CallRequestForMapTask",
+		Opcode:   "",
+	}
+	reply := Reply{}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	call("Coordinator.HandleRequestForMapTask", &args, &reply)
 
-	// fill in the argument(s).
-	args.X = 99
+	if reply.Error {
+		log.Fatalf("failed to fetch task")
+	}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+	return reply
+}
 
-	// send the RPC request, wait for the reply.
-	call("Coordinator.Example", &args, &reply)
+func (w *W) CallDoneMapTask(filename string) Reply {
+	args := Args{
+		WorkerId: w.Id,
+		Operand:  "CallDoneMapTask",
+		Opcode:   filename,
+	}
+	reply := Reply{}
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+	call("Coordinator.HandleDoneMapTask", &args, &reply)
+
+	if reply.Error {
+		log.Fatalf("failed to report done task")
+	}
+
+	return reply
 }
 
 //
