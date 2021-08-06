@@ -115,9 +115,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				log.Printf("Worker %v: get new ReduceTask(%v)", w.Id, reduceId)
 
-				// Start true working
-				// TODO
-
 				kva := []KeyValue{}
 
 				for i := 0; i < mapTaskNum; i++ {

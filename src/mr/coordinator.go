@@ -176,11 +176,9 @@ func (c *Coordinator) HandleRequestForTask(args *Args, reply *Reply) error {
 			c.MapTaskPending[0].TaskStartTime = time.Now()
 			c.MapTaskPending[0].TaskAssignedTo = args.WorkerId
 
-			// log.Printf("before: %v", len(c.MapTaskWaiting))
 			// Append to Waiting list
 			c.MapTaskWaiting = append(c.MapTaskWaiting, c.MapTaskPending[0])
 
-			// log.Printf("after: %v", len(c.MapTaskWaiting))
 			// Remove the first from Pending list
 			c.MapTaskPending = c.MapTaskPending[1:]
 		}
@@ -224,10 +222,8 @@ func (c *Coordinator) HandleDoneMapTask(args *Args, reply *Reply) error {
 		// Append to Done list
 		c.MapTaskDone = append(c.MapTaskDone, matchedItem)
 
-		// log.Printf("before2: %v", len(c.MapTaskWaiting))
 		// Remove from Waiting list
 		c.MapTaskWaiting = append(c.MapTaskWaiting[:matchedIndex], c.MapTaskWaiting[matchedIndex+1:]...)
-		// log.Printf("after2: %v", len(c.MapTaskWaiting))
 	}
 
 	return nil
