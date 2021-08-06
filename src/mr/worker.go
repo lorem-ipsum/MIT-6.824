@@ -82,16 +82,17 @@ func Worker(mapf func(string, string) []KeyValue,
 				file.Close()
 				kva := w.Mapf(filename, string(content))
 
-				intermediate := make([][]KeyValue, len(kva))
+				intermediate := make([][]KeyValue, nReduce)
 
 				for _, kv := range kva {
 					intermediate[ihash(kv.Key)%nReduce] = append(intermediate[ihash(kv.Key)%nReduce], kv)
 				}
 
 				for i := 0; i < nReduce; i++ {
-					file, err := os.Create(fmt.Sprintf("./mr-tmp/mr-%v-%v", taskId, i))
+					file, err := ioutil.TempFile("./", "map-task-file-")
+					// file, err := os.Create(fmt.Sprintf("mr-%v-%v", taskId, i))
 					if err != nil {
-						log.Fatalf("Failed to create file ./mr-tmp/mr-%v-%v", taskId, i)
+						log.Fatalf("Failed to create file mr-%v-%v", taskId, i)
 					}
 
 					enc := json.NewEncoder(file)
@@ -102,6 +103,7 @@ func Worker(mapf func(string, string) []KeyValue,
 						}
 					}
 
+					os.Rename(file.Name(), fmt.Sprintf("mr-%v-%v", taskId, i))
 				}
 
 				w.CallDoneMapTask(filename)
@@ -118,9 +120,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				kva := []KeyValue{}
 
 				for i := 0; i < mapTaskNum; i++ {
-					file, err := os.Open(fmt.Sprintf("./mr-tmp/mr-%v-%v", i, reduceId))
+					file, err := os.Open(fmt.Sprintf("mr-%v-%v", i, reduceId))
 					if err != nil {
-						log.Fatalf("failed to open file ./mr-tmp/mr-%v-%v", i, reduceId)
+						log.Fatalf("failed to open file mr-%v-%v", i, reduceId)
 					}
 
 					dec := json.NewDecoder(file)

@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -9,6 +10,10 @@ import (
 	"sync"
 	"time"
 )
+
+func init() {
+	log.SetOutput(ioutil.Discard)
+}
 
 type MapTaskInfo struct {
 	TaskFile       string
