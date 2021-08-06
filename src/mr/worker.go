@@ -107,6 +107,14 @@ func Worker(mapf func(string, string) []KeyValue,
 				log.Printf("Worker %v: get new ReduceTask", w.Id)
 
 			}
+		case -1:
+			{
+				log.Printf("Worker %v is waiting for a new task!", w.Id)
+			}
+		case -2:
+			{
+				log.Fatalf("Worker %v: abandoned by the coordinator", w.Id)
+			}
 		default:
 			{
 				log.Fatalf("Invalid reply.Type %v!", reply.Type)

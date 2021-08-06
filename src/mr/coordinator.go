@@ -36,6 +36,8 @@ type Coordinator struct {
 	MapTaskPending []MapTaskInfo
 	MapTaskWaiting []MapTaskInfo
 
+	AbandonedWorkers map[int]bool
+
 	NReduce int
 }
 
@@ -50,6 +52,9 @@ func (c *Coordinator) init() {
 		})
 	}
 	log.Printf("c.MapTaskPending: %v", c.MapTaskPending)
+
+	// Init abandon map
+	c.AbandonedWorkers = make(map[int]bool)
 }
 
 func (c *Coordinator) CheckStaleMapTasksLoop() {
@@ -64,8 +69,13 @@ func (c *Coordinator) CheckStaleMapTasksLoop() {
 			for index, item := range c.MapTaskWaiting {
 				if time.Since(item.TaskStartTime) > time.Duration(10*time.Second) {
 					log.Printf("Stale task found: %v", item)
-					// Append to Pending list
-					c.MapTaskPending = append(c.MapTaskPending, item)
+
+					// Abandon the corresponding worker
+					log.Printf("Abandoning worker %v", item.TaskAssignedTo)
+					c.AbandonedWorkers[item.TaskAssignedTo] = true
+
+					// Prepend to Pending list
+					c.MapTaskPending = append([]MapTaskInfo{item}, c.MapTaskPending...)
 
 					// Remove from Waiting list
 					c.MapTaskWaiting = append(c.MapTaskWaiting[:index], c.MapTaskWaiting[index+1:]...)
@@ -89,7 +99,7 @@ func (c *Coordinator) HandleRequestForMapTask(args *Args, reply *Reply) error {
 
 	if len(c.MapTaskPending) == 0 {
 		log.Printf("no map task found")
-		reply.Error = true
+		reply.Type = -1 // Please wait for me
 	} else {
 		log.Printf("fresh map task found")
 
@@ -117,6 +127,14 @@ func (c *Coordinator) HandleDoneMapTask(args *Args, reply *Reply) error {
 	c.muMap.Lock()
 	defer c.muMap.Unlock()
 
+	// First check if the worker is already abandoned!
+
+	if c.AbandonedWorkers[args.WorkerId] {
+		log.Printf("Received done from abandoned worker")
+		reply.Type = -2
+		return nil
+	}
+
 	filenameInWaitingList := false
 
 	matchedIndex := -1
@@ -130,10 +148,10 @@ func (c *Coordinator) HandleDoneMapTask(args *Args, reply *Reply) error {
 	}
 
 	if !filenameInWaitingList {
-		log.Printf("Done task not found in waiting list")
+		log.Fatalf("Done task not found in waiting list")
 		reply.Error = true
 	} else {
-		log.Printf("Task Done. Thank you!")
+		log.Printf("Task Done. Thank you worker %v!", args.WorkerId)
 
 		matchedItem := c.MapTaskWaiting[matchedIndex]
 
