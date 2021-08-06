@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -18,6 +19,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -102,13 +111,56 @@ func Worker(mapf func(string, string) []KeyValue,
 		case 2: // reply with a reduce task
 			{
 				reduceId := reply.Info.ReduceId
+				mapTaskNum := reply.Info.MapTaskNum
 
 				log.Printf("Worker %v: get new ReduceTask(%v)", w.Id, reduceId)
 
 				// Start true working
 				// TODO
 
-				time.Sleep(time.Second * 3)
+				kva := []KeyValue{}
+
+				for i := 0; i < mapTaskNum; i++ {
+					file, err := os.Open(fmt.Sprintf("./mr-tmp/mr-%v-%v", i, reduceId))
+					if err != nil {
+						log.Fatalf("failed to open file ./mr-tmp/mr-%v-%v", i, reduceId)
+					}
+
+					dec := json.NewDecoder(file)
+					for {
+						var kv KeyValue
+						if err := dec.Decode(&kv); err != nil {
+							break
+						}
+						kva = append(kva, kv)
+					}
+				}
+
+				// Steal code from mrsequential.go
+
+				sort.Sort(ByKey(kva))
+				oname := fmt.Sprintf("mr-out-%v", reduceId)
+				ofile, _ := os.Create(oname)
+
+				i := 0
+				for i < len(kva) {
+					j := i + 1
+					for j < len(kva) && kva[j].Key == kva[i].Key {
+						j++
+					}
+					values := []string{}
+					for k := i; k < j; k++ {
+						values = append(values, kva[k].Value)
+					}
+					output := w.Reducef(kva[i].Key, values)
+
+					// correct format
+					fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+					i = j
+				}
+
+				ofile.Close()
 
 				w.callDoneReduceTask(reduceId)
 

@@ -149,6 +149,7 @@ func (c *Coordinator) HandleRequestForTask(args *Args, reply *Reply) error {
 
 			reply.Type = 2
 			reply.Info.ReduceId = c.ReduceTaskPending[0].ReduceId
+			reply.Info.MapTaskNum = len(c.MapTaskDone)
 
 			c.ReduceTaskPending[0].TaskStartTime = time.Now()
 			c.ReduceTaskPending[0].TaskAssignedTo = args.WorkerId

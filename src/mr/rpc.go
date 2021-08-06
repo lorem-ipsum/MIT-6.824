@@ -30,7 +30,8 @@ type Reply struct {
 		TaskId   int
 
 		// For ReduceTaskInfo:
-		ReduceId int
+		ReduceId   int
+		MapTaskNum int
 	}
 	Error bool
 }
