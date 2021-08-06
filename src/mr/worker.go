@@ -51,13 +51,10 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	log.Printf("new Worker generated, Id = %v", w.Id)
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 	for {
-		reply := w.CallRequestForMapTask()
+		reply := w.CallRequestForTask()
 		switch reply.Type {
-		case 1:
+		case 1: // reply with a map task
 			{
 				filename := reply.Info.TaskFile
 				nReduce := reply.Info.NReduce
@@ -102,16 +99,27 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				log.Printf("Worker %v: MapTask(%v) done", w.Id, filename)
 			}
-		case 2:
+		case 2: // reply with a reduce task
 			{
-				log.Printf("Worker %v: get new ReduceTask", w.Id)
+				reduceId := reply.Info.ReduceId
+
+				log.Printf("Worker %v: get new ReduceTask(%v)", w.Id, reduceId)
+
+				// Start true working
+				// TODO
+
+				time.Sleep(time.Second * 3)
+
+				w.callDoneReduceTask(reduceId)
+
+				log.Printf("Worker %v: ReduceTask(%v) done", w.Id, reduceId)
 
 			}
-		case -1:
+		case -1: // waiting for other workers to complete their task
 			{
 				log.Printf("Worker %v is waiting for a new task!", w.Id)
 			}
-		case -2:
+		case -2: // Something bad happened
 			{
 				log.Fatalf("Worker %v: abandoned by the coordinator", w.Id)
 			}
@@ -125,15 +133,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-func (w *W) CallRequestForMapTask() Reply {
+func (w *W) CallRequestForTask() Reply {
 	args := Args{
 		WorkerId: w.Id,
-		Operand:  "CallRequestForMapTask",
+		Operand:  "CallRequestForTask",
 		Opcode:   "",
 	}
 	reply := Reply{}
 
-	call("Coordinator.HandleRequestForMapTask", &args, &reply)
+	call("Coordinator.HandleRequestForTask", &args, &reply)
 
 	if reply.Error {
 		log.Fatalf("failed to fetch task")
@@ -153,7 +161,24 @@ func (w *W) CallDoneMapTask(filename string) Reply {
 	call("Coordinator.HandleDoneMapTask", &args, &reply)
 
 	if reply.Error {
-		log.Fatalf("failed to report done task")
+		log.Fatalf("failed to report done map task")
+	}
+
+	return reply
+}
+
+func (w *W) callDoneReduceTask(reduceId int) Reply {
+	args := Args{
+		WorkerId: w.Id,
+		Operand:  "CallDoneReduceTask",
+		ReduceId: reduceId,
+	}
+	reply := Reply{}
+
+	call("Coordinator.HandleDoneReduceTask", &args, &reply)
+
+	if reply.Error {
+		log.Fatalf("failed to report done reduce task")
 	}
 
 	return reply

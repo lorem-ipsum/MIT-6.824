@@ -17,6 +17,8 @@ type Args struct {
 	WorkerId int
 	Operand  string
 	Opcode   string
+
+	ReduceId int
 }
 
 type Reply struct {
@@ -26,6 +28,9 @@ type Reply struct {
 		TaskFile string
 		NReduce  int
 		TaskId   int
+
+		// For ReduceTaskInfo:
+		ReduceId int
 	}
 	Error bool
 }
