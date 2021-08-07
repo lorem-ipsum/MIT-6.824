@@ -12,9 +12,9 @@
 - [x] Lecture 2: RPC and Threads
 - [x] Lecture 3: GFS
 - [x] Lecture 4: Primary-Backup Replication
-- [ ] Lecture 5: Go, Threads, and Raft
-- [ ] Lecture 6: Fault Tolerance: Raft (1)
-- [ ] Lecture 7: Fault Tolerance: Raft (2)
+- [x] Lecture 5: Go, Threads, and Raft
+- [x] Lecture 6: Fault Tolerance: Raft (1)
+- [x] Lecture 7: Fault Tolerance: Raft (2)
 - [ ] Lecture 8: Zookeeper
 - [ ] Lecture 9: More Replication, CRAQ
 - [ ] Lecture 10: Cloud Replicated DB, Aurora
