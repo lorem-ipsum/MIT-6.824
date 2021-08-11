@@ -191,13 +191,14 @@ func (rf *Raft) heartbeat() {
 				}
 
 				rf.mu.Lock()
+				defer rf.mu.Unlock()
 
-				if reply.Term > oldCurrentTerm || rf.CurrentTerm != oldCurrentTerm {
+				if reply.Term > oldCurrentTerm && rf.CurrentTerm == oldCurrentTerm {
 					DPrintf("Server %v [%v -> follower] due to heartbeat reply", rf.me, rf.State)
 					rf.CurrentTerm = reply.Term
 					rf.VotedFor = -1
 					rf.State = RaftState(FOLLOWER)
-				} else {
+				} else if rf.CurrentTerm == oldCurrentTerm {
 					// remains leader
 					if reply.Success {
 						rf.MatchIndex[i] = max(rf.MatchIndex[i], rf.NextIndex[i]-1)
@@ -208,7 +209,6 @@ func (rf *Raft) heartbeat() {
 					}
 				}
 
-				rf.mu.Unlock()
 			}(index)
 		}
 
