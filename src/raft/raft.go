@@ -20,7 +20,9 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"fmt"
+	"log"
 	"math/rand"
 	"sort"
 	"sync"
@@ -28,6 +30,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -182,6 +185,7 @@ func (rf *Raft) heartbeat_one(index int) bool {
 		DPrintf("Server %v ci %v [%v -> follower] due to heartbeat reply", rf.me, rf.CommitIndex, rf.State)
 		rf.CurrentTerm = reply.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.State = RaftState(FOLLOWER)
 	} else if rf.CurrentTerm == oldCurrentTerm {
 		// remains leader
@@ -261,6 +265,7 @@ func (rf *Raft) sendAE_one(index int) {
 		DPrintf("Server %v ci %v [%v -> follower] due to heartbeat reply", rf.me, rf.CommitIndex, rf.State)
 		rf.CurrentTerm = reply.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.State = RaftState(FOLLOWER)
 	} else if rf.CurrentTerm == oldCurrentTerm {
 		// remains leader
@@ -335,6 +340,7 @@ func (rf *Raft) heartbeat() {
 					DPrintf("Server %v ci %v [%v -> follower] due to heartbeat reply", rf.me, rf.CommitIndex, rf.State)
 					rf.CurrentTerm = reply.Term
 					rf.VotedFor = -1
+					rf.persist()
 					rf.State = RaftState(FOLLOWER)
 				} else if rf.CurrentTerm == oldCurrentTerm {
 					// remains leader
@@ -367,13 +373,14 @@ func (rf *Raft) heartbeat() {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -384,18 +391,19 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var CurrentTerm int
+	var VotedFor int
+	var Log []LogEntry
+	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Log) != nil {
+		log.Fatalf("Having trouble!")
+	} else {
+		rf.CurrentTerm = CurrentTerm
+		rf.VotedFor = VotedFor
+		rf.Log = Log
+	}
 }
 
 //
@@ -462,6 +470,7 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 		DPrintf("Server %v ci %v [%v -> follower] due to late Term in Handle RV", rf.me, rf.CommitIndex, rf.State)
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.State = RaftState(FOLLOWER)
 	}
 
@@ -502,6 +511,7 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		DPrintf("Server %v ci %v [%v -> follower] due to late Term in Handle AE", rf.me, rf.CommitIndex, rf.State)
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.State = RaftState(FOLLOWER)
 	}
 	// 1. Reply false if term < currentTerm
@@ -556,6 +566,7 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 			}
 		}
 	}
+	rf.persist()
 
 	// 5. If leaderCommit > commitIndex,
 	// set commitIndex = min(leaderCommit, index of last new entry)
@@ -642,6 +653,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 		Command: command,
 	})
+	rf.persist()
 	rf.MatchIndex[rf.me] = len(rf.Log) - 1
 
 	go rf.broadcastAEUntil(index)
@@ -714,6 +726,7 @@ func (rf *Raft) broadcastAEUntil(until int) {
 				DPrintf("Server %v ci %v [%v -> follower] due to AE reply", rf.me, rf.CommitIndex, rf.State)
 				rf.CurrentTerm = reply.Term
 				rf.VotedFor = -1
+				rf.persist()
 				rf.State = RaftState(FOLLOWER)
 			} else if rf.CurrentTerm == oldTerm {
 				// remains leader
@@ -885,6 +898,7 @@ func (rf *Raft) StartElection() {
 				DPrintf("Server %v ci %v [%v -> follower] due to RV reply", rf.me, rf.CommitIndex, rf.State)
 				rf.CurrentTerm = reply.Term
 				rf.VotedFor = -1
+				rf.persist()
 				rf.State = RaftState(FOLLOWER)
 			}
 			rf.mu.Unlock()
@@ -899,9 +913,9 @@ func (rf *Raft) StartElection() {
 	}
 	rf.mu.Lock()
 	DPrintf("Server %v ci %v [%v] term %v election finished [%v/%v]", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, granted, finished)
-	rf.mu.Unlock()
+	// rf.mu.Unlock()
 	if granted*2 > total && rf.CurrentTerm == oldCurrentTerm {
-		rf.mu.Lock()
+		// rf.mu.Lock()
 
 		// win the election
 		DPrintf("Server %v ci %v [%v -> leader] term %v win the election [granted=%v, total=%v, term=%v]", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, granted, total, rf.CurrentTerm)
@@ -918,13 +932,14 @@ func (rf *Raft) StartElection() {
 		}
 
 		DPrintf("Server %v ci %v [%v] term %v: start hearbeat()", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm)
-		rf.mu.Unlock()
+		// rf.mu.Unlock()
 
 		// Send initial empty AppendEntries RPCs(heartbeat) to each server
 		// and repeat idle periods to prevent election timeouts
 		go rf.heartbeat()
 	}
 	mu.Unlock()
+	rf.mu.Unlock()
 }
 
 //
