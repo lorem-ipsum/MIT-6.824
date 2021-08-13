@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	HEARTBEAT_INTERVAL = time.Duration(120 * time.Millisecond)
+	HEARTBEAT_INTERVAL = time.Duration(100 * time.Millisecond)
 )
 
 //
@@ -104,6 +104,12 @@ type Raft struct {
 	// Time related variables
 	RandomElectionTimeout time.Duration
 	LastWakeup            time.Time
+
+	notHandled           int
+	notHandledLogEntries []LogEntry
+	lastHandle           time.Time
+
+	lastSendAE time.Time
 }
 
 //
@@ -162,7 +168,7 @@ func (rf *Raft) informOthers() {
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(3 * HEARTBEAT_INTERVAL)
 	}
 }
 
@@ -231,20 +237,19 @@ func (rf *Raft) heartbeat() {
 	for !rf.killed() {
 		rf.mu.Lock()
 
-		if rf.State != RaftState(LEADER) {
-			rf.mu.Unlock()
-			break
+		if rf.State == RaftState(LEADER) &&
+			time.Since(rf.lastSendAE) > HEARTBEAT_INTERVAL {
+			for i := range rf.peers {
+				if i == rf.me {
+					continue
+				}
+				go rf.sendAE_one(i, true)
+			}
 		}
 
-		for i := range rf.NextIndex {
-			if i == rf.me {
-				continue
-			}
-			go rf.sendAE_one(i, true)
-		}
 		rf.mu.Unlock()
 
-		time.Sleep(HEARTBEAT_INTERVAL)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -413,7 +418,7 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
 		if len(rf.Log)-1 < args.PrevLogIndex {
-			reply.NewNextIndex = len(rf.Log) - 1
+			reply.NewNextIndex = len(rf.Log)
 		} else {
 			tmp := args.PrevLogIndex
 			for rf.Log[tmp].Term == rf.Log[args.PrevLogIndex].Term {
@@ -502,6 +507,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	rf.mu.Lock()
+	rf.lastSendAE = time.Now()
+	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.HandleAppendEntries", args, reply)
 	return ok
 }
@@ -537,19 +545,37 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// is leader
 
-	index = len(rf.Log)
+	index = len(rf.Log) + rf.notHandled
 	term = rf.CurrentTerm
 
-	rf.Log = append(rf.Log, LogEntry{
+	rf.notHandled++
+	rf.notHandledLogEntries = append(rf.notHandledLogEntries, LogEntry{
 		Term:    term,
 		Command: command,
 	})
-	rf.persist()
-	rf.MatchIndex[rf.me] = len(rf.Log) - 1
-
-	go rf.broadcastAE()
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) handleStarts() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		if rf.State == RaftState(LEADER) &&
+			rf.notHandled > 0 &&
+			(rf.notHandled >= 20 || time.Since(rf.lastHandle) > time.Duration(40*time.Millisecond)) {
+			rf.Log = append(rf.Log, rf.notHandledLogEntries...)
+			rf.persist()
+			rf.MatchIndex[rf.me] = len(rf.Log) - 1
+
+			go rf.broadcastAE()
+			rf.notHandled = 0
+			rf.lastHandle = time.Now()
+			rf.notHandledLogEntries = []LogEntry{}
+		}
+		rf.mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (rf *Raft) broadcastAE() {
@@ -619,7 +645,7 @@ func (rf *Raft) updateCommit() {
 			// DPrintf("%v", rf.MatchIndex)
 			sort.Ints(matchIndexes)
 			if rf.Log[matchIndexes[l>>1]].Term == rf.CurrentTerm && rf.CommitIndex < matchIndexes[l>>1] {
-				// DPrintf("Server %v ci %v updated commitIndex from %v to %v", rf.me, rf.CommitIndex, rf.CommitIndex, matchIndexes[l>>1])
+				DPrintf("Server %v updated commitIndex from %v to %v", rf.me, rf.CommitIndex, matchIndexes[l>>1])
 				rf.CommitIndex = matchIndexes[l>>1]
 			}
 		}
@@ -738,6 +764,12 @@ func (rf *Raft) StartElection() {
 		// win the election
 		DPrintf("Server %v ci %v [%v -> leader] term %v win the election [granted=%v, total=%v, term=%v]", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, granted, total, rf.CurrentTerm)
 		rf.State = RaftState(LEADER)
+		// Initialize extreme volatile state
+		rf.notHandled = 0
+		rf.lastHandle = time.Now()
+		rf.notHandledLogEntries = []LogEntry{}
+
+		rf.lastSendAE = time.Now().Add(time.Duration(-1) * time.Minute)
 
 		// Initialize volatile state
 		for index := range rf.peers {
@@ -804,6 +836,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// if rf.me != 0 {
 	rf.wake()
 	// }
+
+	rf.notHandledLogEntries = []LogEntry{}
+	rf.notHandled = 0
+	rf.lastHandle = time.Now()
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -811,6 +848,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	DPrintf("Make Server %v ci %v [%v] term %v, #peers=%v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, len(peers))
 	DPrintf("Server %v ci %v [%v] term %v started", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm)
 	go rf.ticker()
+	go rf.handleStarts()
 	go rf.updateCommit()
 	go rf.updateApply()
 	go rf.informOthers()
