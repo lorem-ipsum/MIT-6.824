@@ -146,64 +146,6 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-// This function will block until receiver replies
-// returns true means still decri
-func (rf *Raft) heartbeat_one(index int) bool {
-	rf.mu.Lock()
-
-	if rf.State != RaftState(LEADER) {
-		rf.mu.Unlock()
-		return false
-	}
-
-	oldCurrentTerm := rf.CurrentTerm
-	oldPrevLogIndex := rf.NextIndex[index] - 1
-	oldPrevLogTerm := rf.Log[oldPrevLogIndex].Term
-	oldLeaderCommit := rf.CommitIndex
-
-	rf.mu.Unlock()
-
-	args := AppendEntriesArgs{
-		Term:         oldCurrentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: oldPrevLogIndex,
-		PrevLogTerm:  oldPrevLogTerm, //seems the first index 1 better
-		Entries:      nil,
-		LeaderCommit: oldLeaderCommit,
-	}
-	reply := AppendEntriesReply{}
-	network := rf.sendAppendEntries(index, &args, &reply)
-	if !network {
-		rf.mu.Lock()
-		DPrintf("Server %v ci %v [%v] term %v AE lost %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, index)
-		rf.mu.Unlock()
-		return false
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if reply.Term > oldCurrentTerm && rf.CurrentTerm == oldCurrentTerm {
-		DPrintf("Server %v ci %v [%v -> follower] due to heartbeat reply", rf.me, rf.CommitIndex, rf.State)
-		rf.CurrentTerm = reply.Term
-		rf.VotedFor = -1
-		rf.persist()
-		rf.State = RaftState(FOLLOWER)
-	} else if rf.CurrentTerm == oldCurrentTerm {
-		// remains leader
-		if reply.Success {
-			rf.MatchIndex[index] = max(rf.MatchIndex[index], rf.NextIndex[index]-1)
-			rf.NextIndex[index] = rf.MatchIndex[index] + 1
-		} else {
-			rf.NextIndex[index]-- // optimization
-			DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
-			return true
-		}
-	}
-
-	return false
-}
-
 func (rf *Raft) informOthers() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -215,16 +157,16 @@ func (rf *Raft) informOthers() {
 				}
 
 				if lastLogIndex >= e {
-					go rf.sendAE_one(i)
+					go rf.sendAE_one(i, false)
 				}
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond)
 	}
 }
 
-func (rf *Raft) sendAE_one(index int) {
+func (rf *Raft) sendAE_one(index int, isHeartBeat bool) {
 	rf.mu.Lock()
 
 	if rf.State != RaftState(LEADER) {
@@ -234,19 +176,23 @@ func (rf *Raft) sendAE_one(index int) {
 
 	until := len(rf.Log) - 1
 
-	oldLog := make([]LogEntry, len(rf.Log))
-	copy(oldLog, rf.Log)
 	oldCurrentTerm := rf.CurrentTerm
 	oldPrevLogIndex := rf.NextIndex[index] - 1
 	oldPrevLogTerm := rf.Log[oldPrevLogIndex].Term
 	oldLeaderCommit := rf.CommitIndex
+	logEntries := []LogEntry{}
+	if !isHeartBeat {
+		logEntries = make([]LogEntry, len(rf.Log))
+		copy(logEntries, rf.Log)
+		logEntries = logEntries[oldPrevLogIndex+1 : until+1]
+	}
 
 	args := AppendEntriesArgs{
 		Term:         oldCurrentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: oldPrevLogIndex,
 		PrevLogTerm:  oldPrevLogTerm, //seems the first index 1 better
-		Entries:      oldLog[oldPrevLogIndex+1 : until+1],
+		Entries:      logEntries,
 		LeaderCommit: oldLeaderCommit,
 	}
 	reply := AppendEntriesReply{}
@@ -275,14 +221,14 @@ func (rf *Raft) sendAE_one(index int) {
 			rf.MatchIndex[index] = max(rf.MatchIndex[index], until)
 			rf.NextIndex[index] = rf.MatchIndex[index] + 1
 		} else {
-			rf.NextIndex[index]--
+			rf.NextIndex[index] = reply.NewNextIndex
 			DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
 		}
 	}
 }
 
 func (rf *Raft) heartbeat() {
-	for {
+	for !rf.killed() {
 		rf.mu.Lock()
 
 		if rf.State != RaftState(LEADER) {
@@ -290,79 +236,13 @@ func (rf *Raft) heartbeat() {
 			break
 		}
 
-		oldCurrentTerm := rf.CurrentTerm
-		oldPrevLogIndex := make([]int, len(rf.peers))
-		for i, e := range rf.NextIndex {
+		for i := range rf.NextIndex {
 			if i == rf.me {
 				continue
 			}
-			oldPrevLogIndex[i] = e - 1
+			go rf.sendAE_one(i, true)
 		}
-		oldPrevLogTerm := make([]int, len(rf.peers))
-		for i, e := range rf.NextIndex {
-			if i == rf.me {
-				continue
-			}
-			oldPrevLogTerm[i] = rf.Log[e-1].Term
-		}
-		oldLeaderCommit := rf.CommitIndex
-
 		rf.mu.Unlock()
-
-		for index := range rf.peers {
-			if index == rf.me {
-				continue
-			}
-
-			go func(i int) {
-				args := AppendEntriesArgs{
-					Term:         oldCurrentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: oldPrevLogIndex[i],
-					PrevLogTerm:  oldPrevLogTerm[i], //seems the first index 1 better
-					Entries:      nil,
-					LeaderCommit: oldLeaderCommit,
-				}
-				reply := AppendEntriesReply{}
-
-				rf.mu.Lock()
-				DPrintf("Server %v ci %v [%v] term %v sending AE to %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, i)
-				rf.mu.Unlock()
-				network := rf.sendAppendEntries(i, &args, &reply)
-				if !network {
-					rf.mu.Lock()
-					DPrintf("Server %v ci %v [%v] term %v AE lost %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, i)
-					rf.mu.Unlock()
-					return
-				}
-
-				rf.mu.Lock()
-
-				if reply.Term > oldCurrentTerm && rf.CurrentTerm == oldCurrentTerm {
-					DPrintf("Server %v ci %v [%v -> follower] due to heartbeat reply", rf.me, rf.CommitIndex, rf.State)
-					rf.CurrentTerm = reply.Term
-					rf.VotedFor = -1
-					rf.persist()
-					rf.State = RaftState(FOLLOWER)
-				} else if rf.CurrentTerm == oldCurrentTerm {
-					// remains leader
-					if reply.Success {
-						rf.MatchIndex[i] = max(rf.MatchIndex[i], rf.NextIndex[i]-1)
-						rf.NextIndex[i] = rf.MatchIndex[i] + 1
-					} else {
-						rf.NextIndex[i]--
-						DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
-						rf.mu.Unlock()
-
-						// for rf.heartbeat_one(i) {
-						// }
-						return
-					}
-				}
-				rf.mu.Unlock()
-
-			}(index)
-		}
 
 		time.Sleep(HEARTBEAT_INTERVAL)
 	}
@@ -532,6 +412,15 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
+		if len(rf.Log)-1 < args.PrevLogIndex {
+			reply.NewNextIndex = len(rf.Log) - 1
+		} else {
+			tmp := args.PrevLogIndex
+			for rf.Log[tmp].Term == rf.Log[args.PrevLogIndex].Term {
+				tmp--
+			}
+			reply.NewNextIndex = tmp + 1
+		}
 		return
 	}
 
@@ -668,7 +557,7 @@ func (rf *Raft) broadcastAE() {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendAE_one(i)
+		go rf.sendAE_one(i, false)
 	}
 }
 
