@@ -127,6 +127,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int  // currentTerm, for leader to update itself
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+
+	NewNextIndex int // optimization, back up nextIndex by more than one entry at a time
 }
 
 // return currentTerm and whether this server
@@ -193,7 +195,7 @@ func (rf *Raft) heartbeat_one(index int) bool {
 			rf.MatchIndex[index] = max(rf.MatchIndex[index], rf.NextIndex[index]-1)
 			rf.NextIndex[index] = rf.MatchIndex[index] + 1
 		} else {
-			rf.NextIndex[index]--
+			rf.NextIndex[index]-- // optimization
 			DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
 			return true
 		}
@@ -270,7 +272,7 @@ func (rf *Raft) sendAE_one(index int) {
 	} else if rf.CurrentTerm == oldCurrentTerm {
 		// remains leader
 		if reply.Success {
-			rf.MatchIndex[index] = max(rf.MatchIndex[index], rf.NextIndex[index]-1)
+			rf.MatchIndex[index] = max(rf.MatchIndex[index], until)
 			rf.NextIndex[index] = rf.MatchIndex[index] + 1
 		} else {
 			rf.NextIndex[index]--
@@ -656,90 +658,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 	rf.MatchIndex[rf.me] = len(rf.Log) - 1
 
-	go rf.broadcastAEUntil(index)
+	go rf.broadcastAE()
 
 	return index, term, isLeader
 }
 
-func (rf *Raft) broadcastAEUntil(until int) {
-	rf.mu.Lock()
-	DPrintf("Server %v ci %v [%v] term %v broadcast until %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, until)
-	oldLeaderCommit := rf.CommitIndex
-	oldLog := make([]LogEntry, len(rf.Log))
-	copy(oldLog, rf.Log)
-	DPrintf("oldLog: %v", oldLog)
-	oldTerm := rf.CurrentTerm
-	oldLeaderId := rf.me
-	oldPrevLogIndex := make([]int, len(rf.peers))
-	for i, e := range rf.NextIndex {
+func (rf *Raft) broadcastAE() {
+	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		oldPrevLogIndex[i] = e - 1
-	}
-	DPrintf("Server %v ci %v oldPrevLogIndex: %v", rf.me, rf.CommitIndex, oldPrevLogIndex)
-	oldPrevLogTerm := make([]int, len(rf.peers))
-	for i, e := range rf.NextIndex {
-		if i == rf.me {
-			continue
-		}
-		oldPrevLogTerm[i] = rf.Log[e-1].Term
-	}
-	rf.mu.Unlock()
-
-	for index := range rf.peers {
-		if index == rf.me {
-			continue
-		}
-		oldEntries := []LogEntry{}
-		for j := oldPrevLogIndex[index] + 1; j <= until; j++ {
-			oldEntries = append(oldEntries, oldLog[j])
-		}
-		go func(i int) {
-			args := AppendEntriesArgs{
-				Term:         oldTerm,
-				LeaderId:     oldLeaderId,
-				PrevLogIndex: oldPrevLogIndex[i],
-				PrevLogTerm:  oldPrevLogTerm[i],
-				Entries:      oldEntries,
-				LeaderCommit: oldLeaderCommit,
-			}
-
-			reply := AppendEntriesReply{}
-
-			rf.mu.Lock()
-			DPrintf("Server %v ci %v sending %v entries to %v", rf.me, rf.CommitIndex, len(oldEntries), i)
-			rf.mu.Unlock()
-
-			network := rf.sendAppendEntries(i, &args, &reply)
-			if !network {
-				rf.mu.Lock()
-				DPrintf("Server %v ci %v [%v] term %v AE lost %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, i)
-				rf.mu.Unlock()
-				return
-			}
-
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-
-			if reply.Term > oldTerm && rf.CurrentTerm == oldTerm {
-				DPrintf("Server %v ci %v [%v -> follower] due to AE reply", rf.me, rf.CommitIndex, rf.State)
-				rf.CurrentTerm = reply.Term
-				rf.VotedFor = -1
-				rf.persist()
-				rf.State = RaftState(FOLLOWER)
-			} else if rf.CurrentTerm == oldTerm {
-				// remains leader
-				if reply.Success {
-					rf.MatchIndex[i] = max(rf.MatchIndex[i], until)
-					rf.NextIndex[i] = rf.MatchIndex[i] + 1
-				} else {
-					rf.NextIndex[i]--
-					DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
-				}
-			}
-
-		}(index)
+		go rf.sendAE_one(i)
 	}
 }
 
