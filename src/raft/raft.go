@@ -109,7 +109,7 @@ type Raft struct {
 	notHandledLogEntries []LogEntry
 	lastHandle           time.Time
 
-	lastSendAE time.Time
+	lastSendAE []time.Time
 }
 
 //
@@ -168,7 +168,7 @@ func (rf *Raft) informOthers() {
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(3 * HEARTBEAT_INTERVAL)
+		time.Sleep(HEARTBEAT_INTERVAL)
 	}
 }
 
@@ -226,27 +226,41 @@ func (rf *Raft) sendAE_one(index int, isHeartBeat bool) {
 		if reply.Success {
 			rf.MatchIndex[index] = max(rf.MatchIndex[index], until)
 			rf.NextIndex[index] = rf.MatchIndex[index] + 1
+			// EPrintf("Success! rf.NextIndex[%v] = %v", index, rf.NextIndex[index])
 		} else {
-			rf.NextIndex[index] = reply.NewNextIndex
+			EPrintf("reply.NewNextIndex = %v", reply.NewNextIndex)
+			EPrintf("rf.NextIndex[%v] = min(%v, %v)", index, oldPrevLogIndex, reply.NewNextIndex)
+			rf.NextIndex[index] = min3(rf.NextIndex[index], oldPrevLogIndex, reply.NewNextIndex)
+			// rf.NextIndex[index] = 1
+			// rf.NextIndex[index]--
+			EPrintf("Fail! rf.NextIndex[%v] = %v", index, rf.NextIndex[index])
 			DPrintf("Server %v ci %v [%v] term %v Decri!, nextindex %v at term %v", rf.me, rf.CommitIndex, rf.State, rf.CurrentTerm, rf.NextIndex, rf.CurrentTerm)
 		}
 	}
 }
 
 func (rf *Raft) heartbeat() {
+	// On election, send heartbeat immediately
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go rf.sendAE_one(i, true)
+	}
+
 	for !rf.killed() {
 		rf.mu.Lock()
 
-		if rf.State == RaftState(LEADER) &&
-			time.Since(rf.lastSendAE) > HEARTBEAT_INTERVAL {
+		if rf.State == RaftState(LEADER) {
 			for i := range rf.peers {
 				if i == rf.me {
 					continue
 				}
-				go rf.sendAE_one(i, true)
+				if time.Since(rf.lastSendAE[i]) > HEARTBEAT_INTERVAL {
+					go rf.sendAE_one(i, true)
+				}
 			}
 		}
-
 		rf.mu.Unlock()
 
 		time.Sleep(10 * time.Millisecond)
@@ -371,6 +385,7 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
+		rf.persist()
 		rf.wake()
 		return
 	}
@@ -424,8 +439,9 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 			for rf.Log[tmp].Term == rf.Log[args.PrevLogIndex].Term {
 				tmp--
 			}
-			reply.NewNextIndex = tmp + 1
+			reply.NewNextIndex = tmp + 1 // >= 1
 		}
+		EPrintf("reply.NewNextIndex = %v", reply.NewNextIndex)
 		return
 	}
 
@@ -508,7 +524,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	rf.mu.Lock()
-	rf.lastSendAE = time.Now()
+	rf.lastSendAE[server] = time.Now()
 	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.HandleAppendEntries", args, reply)
 	return ok
@@ -687,6 +703,7 @@ func (rf *Raft) StartElection() {
 	// DPrintf("here")
 	// Vote for self
 	rf.VotedFor = rf.me
+	rf.persist()
 
 	// Reset election timer
 	rf.wake()
@@ -769,11 +786,13 @@ func (rf *Raft) StartElection() {
 		rf.lastHandle = time.Now()
 		rf.notHandledLogEntries = []LogEntry{}
 
-		rf.lastSendAE = time.Now().Add(time.Duration(-1) * time.Minute)
-
+		for i := range rf.peers {
+			rf.lastSendAE[i] = time.Now().Add(time.Duration(-1) * time.Minute)
+		}
 		// Initialize volatile state
 		for index := range rf.peers {
 			if index == rf.me {
+				rf.MatchIndex[index] = len(rf.Log) - 1
 				continue
 			}
 
@@ -840,6 +859,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.notHandledLogEntries = []LogEntry{}
 	rf.notHandled = 0
 	rf.lastHandle = time.Now()
+
+	rf.lastSendAE = make([]time.Time, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
